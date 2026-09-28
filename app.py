@@ -1,10 +1,11 @@
 import streamlit as st
 import pandas as pd
-import io
+import asyncio
+import plotly.express as px
 import classifier
 import loopholes
 from database import Session, Client, Transaction, AuditFlag
-from exporter import generate_ca_audit_workbook # The missing import
+from exporter import generate_ca_audit_workbook
 
 st.set_page_config(page_title="Diamond Enterprise Tax Engine", layout="wide")
 st.title("💎 Enterprise Ledger & Tax Engine")
@@ -18,7 +19,7 @@ if not default_client:
     session.add(default_client)
     session.commit()
 
-# --- HELPER: EXCEL/TALLY INGELSTION & SANITIZATION ---
+# --- HELPER: EXCEL/TALLY INGESTION & SANITIZATION ---
 def standardize_columns(df):
     vendor_col = next((c for c in df.columns if str(c).lower() in ['vendor', 'particulars', 'description', 'narration', 'party']), 'Vendor')
     amount_col = next((c for c in df.columns if str(c).lower() in ['amount', 'debit', 'withdrawal', 'value']), 'Amount')
@@ -38,13 +39,13 @@ def standardize_columns(df):
     if 'Payment_Mode' not in df.columns: df['Payment_Mode'] = 'Bank Transfer'
     return df
 
-# --- UI: FILE UPLOAD ---
+# --- UI: FILE UPLOAD (WITH BATCHING & CACHING) ---
 st.header("1. Upload Bank Statement or Tally Export")
 uploaded_file = st.file_uploader("Upload corporate statement (CSV, XLSX, XLS)", type=["csv", "xlsx", "xls"])
 
 if uploaded_file is not None:
     if st.button("Process & Save to Database"):
-        with st.spinner('Sanitizing data, running AI, and saving to SQLite...'):
+        with st.spinner('Sanitizing data and running AI...'):
             if uploaded_file.name.endswith('.csv'):
                 df = pd.read_csv(uploaded_file)
             else:
@@ -52,10 +53,25 @@ if uploaded_file is not None:
                 
             df = standardize_columns(df)
             
+            # 1. Initialize Cache
+            if 'vendor_cache' not in st.session_state:
+                st.session_state.vendor_cache = {}
+            
+            # 2. Identify new vendors
+            unique_vendors = list(df["Vendor"].dropna().unique())
+            new_vendors = [v for v in unique_vendors if v not in st.session_state.vendor_cache]
+            
+            # 3. Process new vendors asynchronously
+            if new_vendors:
+                st.info(f"⚡ Accelerating AI classification for {len(new_vendors)} new vendors...")
+                new_mappings = asyncio.run(classifier.process_vendors_concurrently(new_vendors))
+                st.session_state.vendor_cache.update(new_mappings)
+            
+            # 4. Map to database
             for index, row in df.iterrows():
                 processed_row = row.to_dict()
                 
-                cat, conf = classifier.predict_category(processed_row["Vendor"])
+                cat = st.session_state.vendor_cache.get(processed_row["Vendor"], "Miscellaneous")
                 processed_row['Category'] = cat 
                 
                 flags = loopholes.run_rules_engine(
@@ -89,7 +105,7 @@ if uploaded_file is not None:
             session.commit()
             st.success("Successfully processed and saved to database!")
 
-# --- UI: DATABASE & EXPORT ---
+# --- UI: DATABASE & DASHBOARD ---
 st.header("2. Audit Dashboard & Working Papers")
 st.write("Review flagged transactions. Edit the 'CA Status' and 'CA Notes' columns, then click Save.")
 
@@ -114,57 +130,12 @@ if all_transactions:
         })
         
     db_df = pd.DataFrame(display_data)
-    import plotly.express as px
-
-    # --- VISUAL ANALYTICS DASHBOARD ---
-    st.markdown("### 📊 Executive Financial & Risk Overview")
     
-    # We use the 'Raw_Amount' column we preserved earlier for accurate math
-    plot_df = db_df.copy()
-    
-    col_chart1, col_chart2 = st.columns(2)
-    
-    with col_chart1:
-        # Chart 1: Expenditure by AI Ledger Category
-        cat_df = plot_df.groupby('AI Category')['Raw_Amount'].sum().reset_index()
-        fig_cat = px.bar(
-            cat_df, 
-            x='AI Category', 
-            y='Raw_Amount', 
-            title='Total Expenditure by AI Category',
-            labels={'Raw_Amount': 'Amount (₹)', 'AI Category': 'Ledger Head'},
-            color='AI Category',
-            template='plotly_white'
-        )
-        st.plotly_chart(fig_cat, use_container_width=True)
-
-    with col_chart2:
-        # Chart 2: Audit Resolution Status (Donut Chart)
-        status_df = plot_df['CA Status'].value_counts().reset_index()
-        status_df.columns = ['Status', 'Count']
-        
-        # Color mapping to make Critical/Pending red and Approved green
-        color_map = {
-            "Pending Review": "#EF553B", # Red
-            "Auto-Approved": "#00CC96",  # Green
-            "Approved": "#00CC96",       # Green
-            "Rejected": "#636EFA"        # Blue
-        }
-        
-        fig_status = px.pie(
-            status_df, 
-            values='Count', 
-            names='Status', 
-            title='Audit Resolution Status',
-            hole=0.4,
-            color='Status',
-            color_discrete_map=color_map
-        )
-        st.plotly_chart(fig_status, use_container_width=True)
-        
+    # Placeholder for live charts
+    dashboard = st.container()
     st.markdown("### 📝 Transaction Ledger & Overrides")
     
-    # Interactive Human-in-the-Loop Grid
+    # Interactive Data Grid
     view_columns = ["ID", "Date", "Vendor", "Amount", "AI Category", "Audit Risks", "CA Status", "CA Notes"]
     
     edited_df = st.data_editor(
@@ -185,7 +156,43 @@ if all_transactions:
         }
     )
     
-    # Save & Export Mechanics
+    # Draw charts with live edits
+    with dashboard:
+        st.markdown("### 📊 Executive Financial & Risk Overview")
+        plot_df = db_df.copy()
+        plot_df['CA Status'] = edited_df['CA Status'] 
+        
+        col_chart1, col_chart2 = st.columns(2)
+        
+        with col_chart1:
+            cat_df = plot_df.groupby('AI Category')['Raw_Amount'].sum().reset_index()
+            fig_cat = px.bar(
+                cat_df, x='AI Category', y='Raw_Amount', 
+                title='Total Expenditure by AI Category',
+                labels={'Raw_Amount': 'Amount (₹)', 'AI Category': 'Ledger Head'},
+                color='AI Category', template='plotly_white'
+            )
+            st.plotly_chart(fig_cat, use_container_width=True)
+
+        with col_chart2:
+            status_df = plot_df['CA Status'].value_counts().reset_index()
+            status_df.columns = ['Status', 'Count']
+            
+            color_map = {
+                "Pending Review": "#EF553B",
+                "Auto-Approved": "#00CC96",
+                "Approved": "#00CC96",
+                "Rejected": "#636EFA"
+            }
+            
+            fig_status = px.pie(
+                status_df, values='Count', names='Status', 
+                title='Audit Resolution Status', hole=0.4,
+                color='Status', color_discrete_map=color_map
+            )
+            st.plotly_chart(fig_status, use_container_width=True)
+    
+    # Save & Export
     col1, col2 = st.columns([1, 4])
     
     with col1:

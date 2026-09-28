@@ -1,11 +1,9 @@
 import os
 import json
+import asyncio
+import streamlit as st
 import google.generativeai as genai
 
-# --- SECURITY: Load your Gemini API Key ---
-# Set this variable in your terminal using: set GEMINI_API_KEY="your_actual_key_here"
-# Or just paste it directly below for local testing (but remove it before uploading to GitHub!)
-import streamlit as st
 API_KEY = st.secrets["GEMINI_API_KEY"]
 genai.configure(api_key=API_KEY)
 
@@ -20,51 +18,48 @@ VALID_CATEGORIES = [
     "Miscellaneous"
 ]
 
-def predict_category(vendor_text):
-    """
-    Passes the transaction description to Gemini 1.5 Flash for semantic classification.
-    Returns: (Category_String, Confidence_Score)
-    """
-    if API_KEY == "YOUR_GEMINI_API_KEY_HERE":
-        print("⚠️ Warning: Gemini API Key not set. Defaulting to Miscellaneous.")
-        return "Miscellaneous", 0.0
-
+async def classify_batch_async(vendor_batch):
+    """Processes a batch of up to 20 vendors concurrently via Gemini."""
     prompt = f"""
-    You are an expert Indian Chartered Accountant auditing a diamond manufacturing enterprise.
-    Classify the following bank transaction description into EXACTLY ONE of these ledger categories:
+    You are an expert Indian Chartered Accountant auditing a diamond enterprise. 
+    Classify these transaction descriptions into EXACTLY ONE of these categories:
     {VALID_CATEGORIES}
     
-    Transaction Description: "{vendor_text}"
+    Transactions to classify:
+    {json.dumps(vendor_batch)}
     
-    Respond ONLY with a valid JSON object in this exact format:
-    {{
-        "category": "The Chosen Category",
-        "confidence": 0.95
-    }}
+    Respond ONLY with a valid JSON object mapping the exact description to the category:
+    {{"Vendor A": "Category", "Vendor B": "Category"}}
     """
     
     try:
-        # We use flash for speed, and explicitly force a JSON response
         model = genai.GenerativeModel('gemini-1.5-flash')
-        response = model.generate_content(
+        response = await model.generate_content_async(
             prompt,
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
-                temperature=0.1 # Low temperature for consistent, analytical responses
+                temperature=0.0 # Zero creativity for maximum classification consistency
             )
         )
-        
-        # Parse the JSON response securely
-        result = json.loads(response.text)
-        category = result.get("category", "Miscellaneous")
-        confidence = float(result.get("confidence", 0.0))
-        
-        # Hallucination Guardrail
-        if category not in VALID_CATEGORIES:
-            category = "Miscellaneous"
-            
-        return category, confidence
-
+        return json.loads(response.text)
     except Exception as e:
-        print(f"Gemini API Error on text '{vendor_text}': {e}")
-        return "Miscellaneous", 0.0
+        print(f"Gemini API Error on batch: {e}")
+        return {vendor: "Miscellaneous" for vendor in vendor_batch}
+
+async def process_vendors_concurrently(vendors):
+    """Splits vendors into batches and processes them via async tasks."""
+    batch_size = 20
+    # Create chunks of 20 vendors
+    batches = [vendors[i:i + batch_size] for i in range(0, len(vendors), batch_size)]
+    
+    # Fire all chunks at Google's servers simultaneously
+    tasks = [classify_batch_async(batch) for batch in batches]
+    results = await asyncio.gather(*tasks)
+    
+    final_mapping = {}
+    for res in results:
+        # Enforce hallucination guardrails on the returned batch
+        for vendor, category in res.items():
+            final_mapping[vendor] = category if category in VALID_CATEGORIES else "Miscellaneous"
+            
+    return final_mapping
