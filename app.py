@@ -104,7 +104,16 @@ if uploaded_file is not None:
             
             session.commit()
             st.success("Successfully processed and saved to database!")
-
+st.markdown("---")
+if st.button("🗑️ Clear Previous Audit Data", type="secondary"):
+    with st.spinner("Wiping database..."):
+        session.query(AuditFlag).delete()
+        session.query(Transaction).delete()
+        session.commit()
+        if 'vendor_cache' in st.session_state:
+            st.session_state.vendor_cache = {}
+    st.success("Database and AI cache wiped clean!")
+    st.rerun()
 # --- UI: DATABASE & DASHBOARD ---
 st.header("2. Audit Dashboard & Working Papers")
 st.write("Review flagged transactions. Edit the 'CA Status' and 'CA Notes' columns, then click Save.")
