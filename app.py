@@ -1,6 +1,5 @@
 import streamlit as st
 import pandas as pd
-import asyncio
 import plotly.express as px
 import classifier
 import loopholes
@@ -61,10 +60,10 @@ if uploaded_file is not None:
             unique_vendors = list(df["Vendor"].dropna().unique())
             new_vendors = [v for v in unique_vendors if v not in st.session_state.vendor_cache]
             
-            # 3. Process new vendors asynchronously
+            # 3. Process new vendors in one stable batch
             if new_vendors:
-                st.info(f"⚡ Accelerating AI classification for {len(new_vendors)} new vendors...")
-                new_mappings = asyncio.run(classifier.process_vendors_concurrently(new_vendors))
+                st.info(f"⚡ Running bulk AI classification for {len(new_vendors)} vendors...")
+                new_mappings = classifier.process_vendors_batch(new_vendors)
                 st.session_state.vendor_cache.update(new_mappings)
             
             # 4. Map to database
