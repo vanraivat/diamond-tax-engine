@@ -1,12 +1,13 @@
 import json
+import os
 import streamlit as st
 import google.generativeai as genai
 
-# Safely load the API key whether running locally or on the cloud
+# Safely load the key from Streamlit secrets (cloud or local .streamlit/secrets.toml)
 try:
     API_KEY = st.secrets["GEMINI_API_KEY"]
 except Exception:
-    API_KEY = "YOUR_ACTUAL_GEMINI_API_KEY"
+    API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 genai.configure(api_key=API_KEY)
 
@@ -48,12 +49,13 @@ def process_vendors_batch(vendors):
     """
     
     try:
-        model = genai.GenerativeModel('gemini-1.5-flash')
+        # Upgraded to the current Gemini 2.5 Flash model
+        model = genai.GenerativeModel('gemini-2.5-flash')
         response = model.generate_content(
             prompt,
             generation_config=genai.GenerationConfig(
                 response_mime_type="application/json",
-                temperature=0.0
+                temperature=0.0 # Zero creativity for absolute consistency
             )
         )
         
@@ -77,5 +79,6 @@ def process_vendors_batch(vendors):
         return final_mapping
 
     except Exception as e:
+        # If the API fails, print the error directly to the Streamlit UI
         st.error(f"🚨 AI Engine Error: {e}")
         return {vendor: "Miscellaneous" for vendor in vendors}
